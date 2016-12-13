@@ -1,7 +1,8 @@
 package com.example.config;
 
-import org.springframework.beans.factory.annotation.Autowired;
+import org.springframework.beans.factory.annotation.Qualifier;
 import org.springframework.boot.autoconfigure.security.SecurityProperties;
+import org.springframework.boot.context.properties.EnableConfigurationProperties;
 import org.springframework.context.annotation.Bean;
 import org.springframework.context.annotation.Configuration;
 import org.springframework.core.annotation.Order;
@@ -34,14 +35,17 @@ import java.security.KeyPair;
 
 @Configuration
 @EnableGlobalMethodSecurity
+@EnableConfigurationProperties
 public class SecurityConfig {
 
     @Configuration
     @EnableWebSecurity
     @Order(SecurityProperties.ACCESS_OVERRIDE_ORDER)
     protected static class WebSecurityConfig extends WebSecurityConfigurerAdapter {
-        private static final String USERS_BY_USERNAME_QUERY = "SELECT username, password, enabled FROM accounts WHERE username = ?";
-        private static final String AUTHORITIES_BY_USERNAME_QUERY = "SELECT username, authority FROM authorities WHERE authority = ?";
+        private static final String USERS_BY_USERNAME_QUERY =
+                "SELECT username, password, enabled FROM accounts WHERE username = ?";
+        private static final String AUTHORITIES_BY_USERNAME_QUERY =
+                "SELECT username, authority FROM authorities WHERE username = ?";
         private final DataSource dataSource;
 
         public WebSecurityConfig(DataSource dataSource) {
@@ -75,7 +79,6 @@ public class SecurityConfig {
         public AuthenticationManager authenticationManagerBean() throws Exception {
             return super.authenticationManagerBean();
         }
-
     }
 
     @Configuration
@@ -99,67 +102,70 @@ public class SecurityConfig {
                     .disable()
                     .authorizeRequests()
                     .antMatchers("/oauth/token").permitAll()
+                    .antMatchers("/jcombat/**").permitAll()
                     .antMatchers("/**").hasRole("USER")
                     .antMatchers("/**")
                     .access("#oauth2.hasScope('write') and #oauth2.hasScope('trust') and hasRole('ROLE_USER')");
         }
+
+        @Configuration
+        @EnableAuthorizationServer
+        protected static class AuthServerConfig extends AuthorizationServerConfigurerAdapter {
+            private final AuthenticationManager authenticationManager;
+            private final UserDetailsService userDetailsService;
+
+            public AuthServerConfig(@Qualifier("authManager") AuthenticationManager authenticationManager,
+                                    UserDetailsService userDetailsService) {
+                this.authenticationManager = authenticationManager;
+                this.userDetailsService = userDetailsService;
+            }
+
+            @Bean
+            public JwtAccessTokenConverter accessTokenConverter() {
+                ClassPathResource resource = new ClassPathResource("wjc.jks");
+                KeyPair keyPair = new KeyStoreKeyFactory(resource, "123456".toCharArray()).getKeyPair("wjc");
+
+                JwtAccessTokenConverter converter = new JwtAccessTokenConverter();
+                converter.setKeyPair(keyPair);
+
+                return converter;
+            }
+
+            @Bean
+            public TokenStore tokenStore() {
+                return new JwtTokenStore(accessTokenConverter());
+            }
+
+            @Override
+            public void configure(AuthorizationServerSecurityConfigurer security) throws Exception {
+                security
+                        .realm("wjc/client")
+                        .tokenKeyAccess("permitAll()")
+                        .checkTokenAccess("isAuthenticated()");
+
+            }
+
+            @Override
+            public void configure(ClientDetailsServiceConfigurer clients) throws Exception {
+                clients
+                        .inMemory()
+                        .withClient("trustedClient")
+                        .secret("wjcsec")
+                        .authorizedGrantTypes("password", "refresh_token")
+                        .scopes("trust", "read", "write")
+                        .authorities("ROLE_USER", "ROLE_ADMIN")
+                        .accessTokenValiditySeconds(300)
+                        .refreshTokenValiditySeconds(86400);
+            }
+
+            @Override
+            public void configure(AuthorizationServerEndpointsConfigurer endpoints) throws Exception {
+                endpoints
+                        .tokenStore(tokenStore())
+                        .authenticationManager(authenticationManager)
+                        .accessTokenConverter(accessTokenConverter())
+                        .userDetailsService(userDetailsService);
+            }
+        }
     }
-
-    @Configuration
-    @EnableAuthorizationServer
-    protected static class AuthServerConfig extends AuthorizationServerConfigurerAdapter {
-        private final AuthenticationManager authenticationManager;
-        private final UserDetailsService userDetailsService;
-
-        public AuthServerConfig(AuthenticationManager authenticationManager, UserDetailsService userDetailsService) {
-            this.authenticationManager = authenticationManager;
-            this.userDetailsService = userDetailsService;
-        }
-
-        @Bean
-        public JwtAccessTokenConverter accessTokenConverter() {
-            ClassPathResource resource = new ClassPathResource("wjc.jks");
-            KeyPair keyPair = new KeyStoreKeyFactory(resource, "123456".toCharArray()).getKeyPair("wjc");
-
-            JwtAccessTokenConverter converter = new JwtAccessTokenConverter();
-            converter.setKeyPair(keyPair);
-
-            return converter;
-        }
-
-        @Bean
-        public TokenStore tokenStore() {
-            return new JwtTokenStore(accessTokenConverter());
-        }
-
-        @Override
-        public void configure(AuthorizationServerSecurityConfigurer security) throws Exception {
-            security.realm("wjc/client")
-                    .tokenKeyAccess("permitAll()")
-                    .checkTokenAccess("isAuthenticated()");
-        }
-
-        @Override
-        public void configure(ClientDetailsServiceConfigurer clients) throws Exception {
-            clients
-                    .inMemory()
-                    .withClient("trustedClient")
-                    .secret("123456")
-                    .authorizedGrantTypes("password", "refresh_token")
-                    .scopes("trust", "read", "write")
-                    .authorities("ROLE_USER", "ROLE_ADMIN")
-                    .accessTokenValiditySeconds(300)
-                    .refreshTokenValiditySeconds(86400);
-        }
-
-        @Override
-        public void configure(AuthorizationServerEndpointsConfigurer endpoints) throws Exception {
-            endpoints
-                    .tokenStore(tokenStore())
-                    .authenticationManager(authenticationManager)
-                    .userDetailsService(userDetailsService);
-        }
-    }
-
-
 }
